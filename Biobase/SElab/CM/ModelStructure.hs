@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Redundant guard" #-}
 
 -- | Defines two model structures. One structure is designed to be easily
 -- modifiable for working with a CM. The second is "static" but efficient
@@ -34,6 +36,7 @@ import           Text.Read
 
 import           Biobase.Primary.Letter
 import           Biobase.Primary.Nuc.RNA
+import           Biobase.Types.BioSequence (RNA)
 import           Biobase.Types.Bitscore
 import           Data.PrimitiveArray hiding (fromList,toList,map)
 
@@ -174,10 +177,10 @@ emitsPair = (==) MP
 -- increasing order. They are set to @-1@ if not given.
 
 data QDB = QDB
-  { _minExpSeqLenBeta2 :: ! Int
-  , _minExpSeqLenBeta1 :: ! Int
-  , _maxExpSeqLenBeta1 :: ! Int
-  , _maxExpSeqLenBeta2 :: ! Int
+  { _minExpSeqLenBeta2 :: !Int
+  , _minExpSeqLenBeta1 :: !Int
+  , _maxExpSeqLenBeta1 :: !Int
+  , _maxExpSeqLenBeta2 :: !Int
   }
   deriving (Eq,Show,Read,Generic)
 
@@ -212,15 +215,15 @@ type Transitions b = VU.Vector (PInt () StateIndex, b)
 -- TODO Map (PInt () StateIndex) State
 
 data State = State
-  { _stateType        :: ! StateType
+  { _stateType        :: !StateType
     -- ^ The type of the current state
-  , _stateParents     :: ! (VU.Vector (PInt () StateIndex))
+  , _stateParents     :: !(VU.Vector (PInt () StateIndex))
     -- ^ List of parents into this state
-  , _stateQDB         :: ! QDB
+  , _stateQDB         :: !QDB
     -- ^ QDB information
-  , _stateTransitions :: ! (Transitions Bitscore)
+  , _stateTransitions :: !(Transitions Bitscore)
     -- ^ Into which children to we transition to
-  , _stateEmissions   :: ! (VU.Vector Bitscore)
+  , _stateEmissions   :: !(VU.Vector Bitscore)
     -- ^ Finally, emission scores, if given for this state. Different
     -- stochastic models should interpret this differently!
     -- For covariance models, the emission order is ACGU for single states
@@ -273,19 +276,19 @@ instance NFData    State
 -- TODO ugly but more efficient? Use just a single @Emit@ data structure?
 
 data States = States
-  { _statesType        :: ! (Unboxed (PInt () StateIndex) StateType)
+  { _statesType        :: !(Unboxed (PInt () StateIndex) StateType)
   -- ^ Type of the state at the current index
-  , _statesParents     :: ! (Boxed (PInt () StateIndex) (VU.Vector (PInt () StateIndex)))
+  , _statesParents     :: !(Boxed (PInt () StateIndex) (VU.Vector (PInt () StateIndex)))
   -- ^ For each state, record which other states lead here
-  , _statesTransitions :: ! (Boxed (PInt () StateIndex) (Transitions Bitscore))
+  , _statesTransitions :: !(Boxed (PInt () StateIndex) (Transitions Bitscore))
   -- ^ Transitions to a state, together with the transition score;
   -- unpopulated transitions are set to @-1@.
   -- TODO we have "forbidden" transitions. Consider how to handle these.
   -- Easy solution is very low bitscores, maybe @-neginf@?
-  , _statesQDB          :: ! (Unboxed (PInt () StateIndex) QDB)
-  , _statesEmitPair    :: ! (Unboxed (Z:.PInt () StateIndex:.Letter RNA:.Letter RNA) Bitscore)
+  , _statesQDB          :: !(Unboxed (PInt () StateIndex) QDB)
+  , _statesEmitPair    :: !(Unboxed (Z:.PInt () StateIndex:.Letter RNA ():.Letter RNA ()) Bitscore)
   -- ^ Scores for the emission of a pair
-  , _statesEmitSingle  :: ! (Unboxed (Z:.PInt () StateIndex:.Letter RNA) Bitscore)
+  , _statesEmitSingle  :: !(Unboxed (Z:.PInt () StateIndex:.Letter RNA ()) Bitscore)
   -- ^ Scores for the emission of a single nucleotide
   }
   deriving (Eq,Show,Read,Generic)
@@ -295,12 +298,12 @@ makePrisms ''States
 
 instance Default States where
   def = States
-    { _statesType        = fromAssocs 0            0            (StateType $ -1)  []
-    , _statesParents     = fromAssocs 0            0            VG.empty          []
-    , _statesTransitions = fromAssocs 0            0            VG.empty          []
-    , _statesQDB         = fromAssocs 0            0            def               []
-    , _statesEmitPair    = fromAssocs (Z:.0:.A:.A) (Z:.0:.A:.A) 0                 []
-    , _statesEmitSingle  = fromAssocs (Z:.0:.A)    (Z:.0:.A)    0                 []
+    { _statesType        = fromAssocs (LtPInt 0) (StateType $ -1) []
+    , _statesParents     = fromAssocs (LtPInt 0) VG.empty []
+    , _statesTransitions = fromAssocs (LtPInt 0) VG.empty []
+    , _statesQDB         = fromAssocs (LtPInt 0) def []
+    , _statesEmitPair    = fromAssocs (ZZ:..LtPInt 0:..LtLetter (Letter 0):..LtLetter (Letter 0)) 0 []
+    , _statesEmitSingle  = fromAssocs (ZZ:..LtPInt 0:..LtLetter (Letter 0)) 0 []
     }
 
 instance Binary    States
@@ -312,7 +315,9 @@ instance NFData    States
 -- | A pure getter to retrieve the last state
 
 sLastState :: Getter States (PInt () StateIndex)
-sLastState = statesType . to bounds . to snd
+sLastState = to $ \states ->
+  case upperBound (_statesType states) of
+    LtPInt intBound -> PInt intBound
 {-# Inline sLastState #-}
 
 
@@ -327,21 +332,21 @@ sLastState = statesType . to bounds . to snd
 -- once we re-activate Stockholm file parsing.
 
 data Node = Node
-  { _nodeType   :: ! NodeType
+  { _nodeType   :: !NodeType
   -- ^ Type of the node
-  , _nodeStates :: ! (V.Vector (PInt () StateIndex))
+  , _nodeStates :: !(V.Vector (PInt () StateIndex))
   -- ^ States associated with this node
-  , _nodeColL   :: ! Int
+  , _nodeColL   :: !Int
   -- ^ Column index in the corresponding Stockholm file
-  , _nodeColR   :: ! Int
+  , _nodeColR   :: !Int
   -- ^ Column index in the corresponding Stockholm file
-  , _nodeConL   :: ! Char
+  , _nodeConL   :: !Char
   -- ^ TODO
-  , _nodeConR   :: ! Char
+  , _nodeConR   :: !Char
   -- ^ TODO
-  , _nodeRefL   :: ! Char
+  , _nodeRefL   :: !Char
   -- ^ TODO
-  , _nodeRefR   :: ! Char
+  , _nodeRefR   :: !Char
   -- ^ TODO
   }
   deriving (Eq,Ord,Show,Read,Generic)
@@ -372,14 +377,14 @@ instance Default Node where
 -- * High-performance structure for @Node@s.
 
 data Nodes = Nodes
-  { _nodesType   :: ! (Unboxed (PInt () NodeIndex) NodeType)
-  , _nodesStates :: ! (Boxed   (PInt () NodeIndex) (V.Vector (PInt () StateIndex)))
-  , _nodesColL   :: ! (Unboxed (PInt () NodeIndex) Int)
-  , _nodesColR   :: ! (Unboxed (PInt () NodeIndex) Int)
-  , _nodesConL   :: ! (Unboxed (PInt () NodeIndex) Char)
-  , _nodesConR   :: ! (Unboxed (PInt () NodeIndex) Char)
-  , _nodesRefL   :: ! (Unboxed (PInt () NodeIndex) Char)
-  , _nodesRefR   :: ! (Unboxed (PInt () NodeIndex) Char)
+  { _nodesType   :: !(Unboxed (PInt () NodeIndex) NodeType)
+  , _nodesStates :: !(Boxed   (PInt () NodeIndex) (V.Vector (PInt () StateIndex)))
+  , _nodesColL   :: !(Unboxed (PInt () NodeIndex) Int)
+  , _nodesColR   :: !(Unboxed (PInt () NodeIndex) Int)
+  , _nodesConL   :: !(Unboxed (PInt () NodeIndex) Char)
+  , _nodesConR   :: !(Unboxed (PInt () NodeIndex) Char)
+  , _nodesRefL   :: !(Unboxed (PInt () NodeIndex) Char)
+  , _nodesRefR   :: !(Unboxed (PInt () NodeIndex) Char)
   }
   deriving (Eq,Show,Read,Generic)
 
@@ -388,14 +393,14 @@ makePrisms ''Nodes
 
 instance Default Nodes where
   def = Nodes
-    { _nodesType   = fromAssocs 0 0 (NodeType $ -1) []
-    , _nodesStates = fromAssocs 0 0 VG.empty        []
-    , _nodesColL   = fromAssocs 0 0 (-1)            []
-    , _nodesColR   = fromAssocs 0 0 (-1)            []
-    , _nodesConL   = fromAssocs 0 0 '-'             []
-    , _nodesConR   = fromAssocs 0 0 '-'             []
-    , _nodesRefL   = fromAssocs 0 0 '-'             []
-    , _nodesRefR   = fromAssocs 0 0 '-'             []
+    { _nodesType   = fromAssocs (LtPInt 0) (NodeType $ -1) []
+    , _nodesStates = fromAssocs (LtPInt 0) VG.empty        []
+    , _nodesColL   = fromAssocs (LtPInt 0) (-1)            []
+    , _nodesColR   = fromAssocs (LtPInt 0) (-1)            []
+    , _nodesConL   = fromAssocs (LtPInt 0) '-'             []
+    , _nodesConR   = fromAssocs (LtPInt 0) '-'             []
+    , _nodesRefL   = fromAssocs (LtPInt 0) '-'             []
+    , _nodesRefR   = fromAssocs (LtPInt 0) '-'             []
     }
 
 instance Binary    Nodes
@@ -408,8 +413,8 @@ instance NFData    Nodes
 
 
 data StaticModel = StaticModel
-  { _smStates :: ! States
-  , _smNodes  :: ! Nodes
+  { _smStates :: !States
+  , _smNodes  :: !Nodes
   }
   deriving (Eq,Show,Read,Generic)
 
@@ -429,8 +434,8 @@ instance Default StaticModel where
 -- into a @StaticModel@, the model itself needs to be valid.
 
 data FlexibleModel = FlexibleModel
-  { _fmStates :: ! (Map (PInt () StateIndex) State)
-  , _fmNodes  :: ! (Map (PInt () NodeIndex ) Node )
+  { _fmStates :: !(Map (PInt () StateIndex) State)
+  , _fmNodes  :: !(Map (PInt () NodeIndex ) Node )
   }
   deriving (Eq,Show,Read,Generic)
 
@@ -454,7 +459,9 @@ instance Default FlexibleModel where
 isValidModel :: FlexibleModel -> Bool
 isValidModel = error "isvalidModel: write me!"
 
-
+lt :: PInt () a -> LimitType (PInt () a)
+lt (PInt n) = LtPInt n
+{-# Inline lt #-}
 
 -- * Isomorphisms between static and flexible models
 --
@@ -478,18 +485,18 @@ flexibleToStatic :: FlexibleModel -> StaticModel
 flexibleToStatic (FlexibleModel s n)
   | True = StaticModel s' n'
   where s' = States
-          { _statesType        = fromAssocs 0 mix (StateType $ -1) $ zip ix $ s ^.. traverse . stateType
-          , _statesParents     = fromAssocs 0 mix VG.empty         $ zip ix $ s ^.. traverse . stateParents
-          , _statesTransitions = fromAssocs 0 mix VG.empty         $ zip ix $ s ^.. traverse . stateTransitions
-          , _statesQDB         = fromAssocs 0 mix def              $ zip ix $ s ^.. traverse . stateQDB
+          { _statesType        = fromAssocs (lt mix) (StateType $ -1) $ zip ix $ s ^.. traverse . stateType
+          , _statesParents     = fromAssocs (lt mix) VG.empty         $ zip ix $ s ^.. traverse . stateParents
+          , _statesTransitions = fromAssocs (lt mix) VG.empty         $ zip ix $ s ^.. traverse . stateTransitions
+          , _statesQDB         = fromAssocs (lt mix) def              $ zip ix $ s ^.. traverse . stateQDB
           --
-          , _statesEmitPair    = fromAssocs (Z:.0:.A:.A) (Z:.mix:.U:.U) def $
+          , _statesEmitPair    = fromAssocs (ZZ:..lt mix:..LtLetter U:..LtLetter U) def $
                 [ (Z:.k:.n1:.n2,e)
                 | (k,es) <- zip ix $ s ^.. traverse . stateEmissions
                 , VG.length es == 16
                 , ((n1,n2),e) <- zip ((,) <$> acgu <*> acgu) (VG.toList es)
                 ]
-          , _statesEmitSingle  = fromAssocs (Z:.0:.A) (Z:.mix:.U) def $
+          , _statesEmitSingle  = fromAssocs (ZZ:..lt mix:..LtLetter U) def $
                 [ (Z:.k:.n1,e)
                 | (k,es) <- zip ix $ s ^.. traverse . stateEmissions
                 , VG.length es == 4
@@ -497,15 +504,19 @@ flexibleToStatic (FlexibleModel s n)
                 ]
           } where ix = M.keys s ; mix = maximum ix
         n' = Nodes
-          { _nodesType   = fromAssocs 0 mix (NodeType $ -1) $ zip ix $ n ^.. traverse . nodeType
-          , _nodesStates = fromAssocs 0 mix VG.empty        $ zip ix $ n ^.. traverse . nodeStates
-          , _nodesColL   = fromAssocs 0 mix (-1)            $ zip ix $ n ^.. traverse . nodeColL
-          , _nodesColR   = fromAssocs 0 mix (-1)            $ zip ix $ n ^.. traverse . nodeColR
-          , _nodesConL   = fromAssocs 0 mix '-'             $ zip ix $ n ^.. traverse . nodeConL
-          , _nodesConR   = fromAssocs 0 mix '-'             $ zip ix $ n ^.. traverse . nodeConR
-          , _nodesRefL   = fromAssocs 0 mix '-'             $ zip ix $ n ^.. traverse . nodeRefL
-          , _nodesRefR   = fromAssocs 0 mix '-'             $ zip ix $ n ^.. traverse . nodeRefR
+          { _nodesType   = fromAssocs (lt mix) (NodeType $ -1) $ zip ix $ n ^.. traverse . nodeType
+          , _nodesStates = fromAssocs (lt mix) VG.empty        $ zip ix $ n ^.. traverse . nodeStates
+          , _nodesColL   = fromAssocs (lt mix) (-1)            $ zip ix $ n ^.. traverse . nodeColL
+          , _nodesColR   = fromAssocs (lt mix) (-1)            $ zip ix $ n ^.. traverse . nodeColR
+          , _nodesConL   = fromAssocs (lt mix) '-'             $ zip ix $ n ^.. traverse . nodeConL
+          , _nodesConR   = fromAssocs (lt mix) '-'             $ zip ix $ n ^.. traverse . nodeConR
+          , _nodesRefL   = fromAssocs (lt mix) '-'             $ zip ix $ n ^.. traverse . nodeRefL
+          , _nodesRefR   = fromAssocs (lt mix) '-'             $ zip ix $ n ^.. traverse . nodeRefR
           } where ix = M.keys n ; mix = maximum ix
+
+oldbounds :: LimitType (PInt () a) -> (PInt () a, PInt () a)
+oldbounds (LtPInt n) = (PInt 0, PInt n)
+{-# Inline oldbounds #-}
 
 -- | Make static model flexible again.
 --
@@ -513,11 +524,12 @@ flexibleToStatic (FlexibleModel s n)
 --
 -- TODO emission handling for generalized models
 
+
 staticToFlexible :: StaticModel -> FlexibleModel
 staticToFlexible (StaticModel States{..} Nodes{..})
   = FlexibleModel s' n'
-  where s' = M.fromList $ map goS $ uncurry enumFromTo $ bounds _statesType
-        n' = M.fromList $ map goN $ uncurry enumFromTo $ bounds _nodesType
+  where s' = M.fromList $ map goS $ uncurry enumFromTo $ oldbounds $ upperBound _statesType
+        n' = M.fromList $ map goN $ uncurry enumFromTo $ oldbounds $ upperBound _nodesType
         goS k = (k,) $ State
           { _stateType        = t
           , _stateParents     = _statesParents      ! k
