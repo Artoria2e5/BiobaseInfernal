@@ -109,5 +109,5 @@ instance Default (HMM xfam) where
 -- instance Serialize (HMM xfam)
 -- instance FromJSON  (HMM xfam)
 -- instance ToJSON    (HMM xfam)
--- instance NFData    (HMM xfam)
+instance NFData (HMM xfam)
 
