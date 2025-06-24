@@ -64,7 +64,7 @@ type PostFilterFun = Text -> Accession () -> Either (HMM ()) CM -> Bool
 -- TODO use a builder?
 
 newtype Log = Log { getLog :: Text }
-  deriving (Monoid,IsString)
+  deriving (Semigroup,Monoid,IsString)
 
 -- | The type of logger we use
 
